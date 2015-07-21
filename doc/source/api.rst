@@ -64,6 +64,7 @@ Nervana GPU
   :toctree: generated/
 
   neon.backends.gpu.GPU
+  neon.backends.mgpu.MGPU
 
 Nervana Hardware
 ----------------
@@ -185,7 +186,6 @@ Convolutional Layer
    :toctree: generated/
 
    neon.layers.convolutional.ConvLayer
-   neon.layers.convolutional.SubConvLayer
 
 Pooling Layers
 ---------------
@@ -263,6 +263,7 @@ Gradient Descent
    neon.optimizers.gradient_descent.GradientDescentMomentum
    neon.optimizers.gradient_descent.GradientDescentMomentumWeightDecay
    neon.optimizers.adadelta.AdaDelta
+   neon.optimizers.rmsprop.RMSProp
 
 Parameter Related
 =================
@@ -373,6 +374,22 @@ CIFAR10
    :toctree: generated/
 
    neon.datasets.cifar10.CIFAR10
+
+CIFAR100
+--------
+
+.. autosummary::
+   :toctree: generated/
+
+   neon.datasets.cifar100.CIFAR100
+
+Housing
+-------
+
+.. autosummary::
+   :toctree: generated/
+
+   neon.datasets.housing.Housing
 
 Iris
 ----

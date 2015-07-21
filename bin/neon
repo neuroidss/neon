@@ -57,12 +57,6 @@ def parse_args():
                         help=' 1 for stochastic rounding, 0 for deterministic')
     parser.add_argument('-n', '--nrv', action='store_true',
                         help='Attempt to run using the Nervana Engine hardware')
-    parser.add_argument('-p', '--datapar', action='store_true',
-                        help='Use parallelization to partition the data over '
-                             'multiple nodes')
-    parser.add_argument('-m', '--modelpar', action='store_true',
-                        help='Use parallelization to partition the model over '
-                             'multiple nodes')
     parser.add_argument('-l', '--live', action='store_true',
                         help='Perform inference on live data')
     parser.add_argument('-f', '--flexpoint', action='store_true',
@@ -71,8 +65,10 @@ def parse_args():
     parser.add_argument('-r', '--rng_seed', type=int,
                         help='Seed the random number generator for the backend'
                              ' with the specified value.')
-    parser.add_argument('-i', '--device_id', type=int,
-                        help='Select accelerator device id to run process on')
+    parser.add_argument('-i', '--device_id', type=int, nargs='+',
+                        help='Select accelerator device id(s) to run process '
+                        'on. (If specifying multiple devices, must occur at '
+                        'end of command)')
     parser.add_argument('-e', '--numerr_handling', action='store',
                         type=yaml.load, help='Set how numeric errors are '
                         'handled.  Python dict syntax, parameters are the same'
@@ -91,6 +87,8 @@ def parse_args():
                         help='Trace through function calls. Optional '
                              'argument is a regex filter on the name of the '
                              'source files to confine the trace to.')
+    parser.add_argument('--integration', action='store_true',
+                        help='Run in integration testing mode')
     return(parser.parse_args())
 
 
@@ -122,6 +120,44 @@ def main():
                         'locally.')
     try:
         experiment = deserialize(args.yaml_file)
+        if args.integration:
+            logging.basicConfig(level=40)
+            from neon.metrics import MisclassPercentage
+            experiment.metrics = dict()
+            experiment.metrics["train"] = [MisclassPercentage()]
+            experiment.metrics["test"] = [MisclassPercentage()]
+            experiment.metrics["validation"] = [MisclassPercentage()]
+
+            # Removing dropout layers for integration testing
+            experiment.model.layers = [lyr for lyr in experiment.model.layers \
+                                       if not lyr.is_random]
+
+            # Don't do any (de)serialization
+            if hasattr(experiment.model, 'serialized_path'):
+                del experiment.model.serialized_path
+            if hasattr(experiment.model, 'deserialized_path'):
+                del experiment.model.deserialized_path
+
+            # Some tweaks to specific to each dataset
+            dataset_name = experiment.dataset.__class__.__name__
+            if dataset_name == 'Imageset':
+                if experiment.dataset.imageset == 'I1K':
+                    experiment.dataset.ntrain = 2
+                    experiment.dataset.nval = 1
+                    experiment.dataset.do_transforms = False
+                    experiment.model.num_epochs = 2
+                    experiment.metrics["test"] = []
+
+            if dataset_name in ['CIFAR10', 'MNIST', 'MOBYDICK']:
+                experiment.model.num_epochs = 5
+                experiment.metrics["validation"] = []
+
+            if dataset_name in ['CIFAR10', 'MNIST']:
+                experiment.dataset.sample_pct = 10
+
+            if args.gpu == 'cpu':
+                args.gpu = None
+
         if hasattr(experiment, 'live'):
             experiment.live = args.live
         if hasattr(experiment, 'logging'):
@@ -140,7 +176,7 @@ def main():
                 logging.warn("setting log level to: %d",
                              experiment.logging["level"])
                 logger.setLevel(experiment.logging["level"])
-        if args.output is not None:
+        if args.output is not None and not args.integration:
             # compute a standard set of metrics
             from neon.metrics import MisclassPercentage, AUC, LogLossMean
             experiment.metrics = dict()
@@ -153,9 +189,8 @@ def main():
         # carry out the experiment
         if not hasattr(experiment, 'backend') or experiment.backend is None:
             backend = gen_backend(model=experiment.model, gpu=args.gpu,
-                                  nrv=args.nrv, datapar=args.datapar,
+                                  nrv=args.nrv,
                                   stochastic_round=args.rounding,
-                                  modelpar=args.modelpar,
                                   flexpoint=args.flexpoint,
                                   rng_seed=args.rng_seed,
                                   numerr_handling=args.numerr_handling,
@@ -183,9 +218,10 @@ def main():
                 for metric in [str(x) for x in experiment.metrics[dset]]:
                     if metric not in result[dset]:
                         result[dset][metric] = float("nan")
+            be_name = 'CPU' if args.gpu is None else args.gpu.lower()
             dump_metrics(args.output, args.yaml_file.name,
                          start_date, default_timer() - start_time,
-                         backend.__class__.__name__, result)
+                         be_name, result)
         return experiment, result, 0
     except Exception as e:
         if args.debug:

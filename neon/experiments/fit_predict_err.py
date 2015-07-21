@@ -23,6 +23,7 @@ import os
 from neon.util.persist import serialize
 from neon.experiments.fit import FitExperiment
 from neon.util.param import opt_param
+from neon.util.defaults import default_metric
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +39,17 @@ class FitPredictErrorExperiment(FitExperiment):
     parameters (rather than learning from scratch).  The same may also apply to
     the datasets specified.
 
-    Kwargs:
+    Keyword Args:
         backend (neon.backends.Backend): The backend to associate with the
-                                            datasets to use in this experiment
+                                         datasets to use in this experiment
+
     TODO:
         add other params
     """
     def __init__(self, **kwargs):
         super(FitPredictErrorExperiment, self).__init__(**kwargs)
         opt_param(self, ['diagnostics'], {'timing': False, 'ranges': False})
-        opt_param(self, ['metrics'], {})
+        opt_param(self, ['metrics'], default_metric())
         opt_param(self, ['predictions'], {})
 
     def initialize(self, backend):
@@ -155,7 +157,7 @@ class FitPredictErrorExperiment(FitExperiment):
         while True:
             try:
                 result = self.model.predict_live()
-                logger.info(result)
+                self.dataset.process_result(result.asnumpyarray())
             except KeyboardInterrupt:
                 logger.info('Execution interrupted.')
                 self.dataset.unload()

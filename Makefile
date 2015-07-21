@@ -19,7 +19,6 @@
 DEV := $(strip $(shell grep -i '^ *DEV *=' setup.cfg | cut -f 2 -d '='))
 CPU := $(strip $(shell grep -i '^ *CPU *=' setup.cfg | cut -f 2 -d '='))
 GPU := $(strip $(shell grep -i '^ *GPU *=' setup.cfg | cut -f 2 -d '='))
-DIST := $(strip $(shell grep -i '^ *DIST *=' setup.cfg | cut -f 2 -d '='))
 
 # get release version info
 RELEASE := $(strip $(shell grep '^VERSION *=' setup.py | cut -f 2 -d '=' \
@@ -46,7 +45,7 @@ ifneq ($(GPU), 0)
     endif
   else
     # we assume a Linux-like OS
-    ifneq ($(shell nvidia-smi > /dev/null 2>&1; echo $$?), 0)
+    ifneq ($(shell nvcc --version > /dev/null 2>&1; echo $$?), 0)
       $(info No CUDA capable GPU installed.  Forcing GPU=0)
       override GPU := 0
     endif
@@ -59,7 +58,7 @@ ifeq ($(DEV), 0)
   NOSE_ATTRS := $(NOSE_ATTRS),'!dev'
 else
   INSTALL_REQUIRES := $(INSTALL_REQUIRES) 'nose>=1.3.0' 'Pillow>=2.5.0' \
-    'flake8>=2.2.2' 'pep8-naming>=0.2.2' 'sphinx>=1.2.2' \
+    'flake8>=2.2.2' 'pep8-naming>=0.2.2' 'sphinx>=1.2.2' 'posix_ipc>=1.0.0' \
     'sphinxcontrib-napoleon>=0.2.8' 'scikit-learn>=0.15.2' 'matplotlib>=1.4.0' \
     'git+https://github.com/NervanaSystems/imgworker.git\#egg=imgworker>=0.2.5'
 endif
@@ -68,30 +67,24 @@ ifeq ($(GPU), 0)
 else
   ifeq ($(GPU), cudanet)
     INSTALL_REQUIRES := $(INSTALL_REQUIRES) \
-      'git+https://github.com/NervanaSystems/cuda-convnet2.git\#egg=cudanet>=0.2.5' \
-      'pycuda>=2014.1'
+      'git+https://github.com/NervanaSystems/cuda-convnet2.git\#egg=cudanet>=0.2.7' \
+      'pycuda>=2015.1'
   endif
   ifeq ($(GPU), nervanagpu)
     INSTALL_REQUIRES := $(INSTALL_REQUIRES) \
-      'git+https://github.com/NervanaSystems/nervanagpu.git\#egg=nervanagpu>=0.3.1'
+      'git+https://github.com/NervanaSystems/nervanagpu.git\#egg=nervanagpu>=0.3.3'
   endif
-endif
-ifeq ($(DIST), 0)
-  NOSE_ATTRS := $(NOSE_ATTRS),'!dist'
-else
-  INSTALL_REQUIRES := $(INSTALL_REQUIRES) 'mpi4py>=1.3.1'
 endif
 
 .PHONY: default build develop install uninstall test test_all sanity speed \
 	      grad all clean_pyc clean doc html style lint bench dist publish_doc \
-	      release
+	      release serialize integration
 
 default: build
 
 build: clean_pyc
-	@echo "Running build(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU) DIST=$(DIST))..."
-	@python setup.py neon --dev $(DEV) --cpu $(CPU) --gpu $(GPU) --dist $(DIST) \
-		build
+	@echo "Running build(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU))..."
+	@python setup.py neon --dev $(DEV) --cpu $(CPU) --gpu $(GPU) build
 
 pip_check:
 ifeq (, $(shell which pip))
@@ -118,12 +111,12 @@ ifdef INSTALL_REQUIRES
 	@pip install $(INSTALL_REQUIRES)
 endif
 
-develop: clean_pyc pip_check deps_install .git/hooks/pre-commit
-	@echo "Running develop(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU) DIST=$(DIST))..."
+develop: deps_install
+	@echo "Running develop(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU))..."
 	@pip install -e .
 
-install: clean_pyc pip_check deps_install
-	@echo "Running install(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU) DIST=$(DIST))..."
+install: deps_install
+	@echo "Running install(DEV=$(DEV) CPU=$(CPU) GPU=$(GPU))..."
 	@pip install .
 
 uninstall: pip_check
@@ -136,22 +129,25 @@ test: build
 
 test_all:
 	@echo "Running test_all..."
-	@tox -- -e CPU=$(CPU) GPU=$(GPU) DIST=$(DIST)
+	@tox -- -e CPU=$(CPU) GPU=$(GPU)
+
+integration: build
+	@echo "Running integration checks (this may take 10-20 minutes)..."
+	@examples/run_integration_tests.sh
 
 serialize: build
 	@echo "Running serialize checks..."
-	@PYTHONPATH=${PYTHONPATH}:./ python neon/tests/serialize_check.py \
-		--cpu $(CPU) --gpu $(GPU) --datapar $(DIST) --modelpar $(DIST)
+	nosetests neon/tests/test_serialize.py
     
 sanity: build
 	@echo "Running sanity checks..."
 	@PYTHONPATH=${PYTHONPATH}:./ python neon/tests/sanity_check.py \
-		--cpu $(CPU) --gpu $(GPU) --datapar $(DIST) --modelpar $(DIST)
+		--cpu $(CPU) --gpu $(GPU)
 
 speed: build
 	@echo "Running speed checks..."
 	@PYTHONPATH=${PYTHONPATH}:./ python neon/tests/speed_check.py \
-		--cpu $(CPU) --gpu $(GPU) --datapar $(DIST) --modelpar $(DIST)
+		--cpu $(CPU) --gpu $(GPU)
 
 grad: build
 	@echo "Running gradient checks..."
@@ -182,10 +178,6 @@ html: doc
 
 style:
 	@-flake8 --exclude=.tox,build,dist,src .
-
-.git/hooks/pre-commit:
-	@flake8 --install-hook
-	@-touch .git/hooks/pre-commit
 
 lint:
 	@-pylint --output-format=colorized neon

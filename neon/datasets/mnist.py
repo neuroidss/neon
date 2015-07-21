@@ -52,7 +52,7 @@ class MNIST(Dataset):
         targets (dict): structure housing the loaded train/test/validation
                         target data
 
-    Kwargs:
+    Keyword Args:
         repo_path (str, optional): where to locally host this dataset on disk
     """
     raw_base_url = 'http://yann.lecun.com/exdb/mnist/'
@@ -98,7 +98,7 @@ class MNIST(Dataset):
             array = np.fromfile(f, dtype='uint8')
         return array
 
-    def load(self):
+    def load(self, backend=None, experiment=None):
         if self.inputs['train'] is not None:
             return
         if 'repo_path' in self.__dict__:
@@ -131,14 +131,15 @@ class MNIST(Dataset):
                 elif 'labels' in repo_file and 'train' in repo_file:
                     indat = self.read_label_file(repo_file)
                     # Prep a 1-hot label encoding
-                    tmp = np.zeros((indat.shape[0], 10))
+                    tmp = np.zeros((indat.shape[0], 10), dtype=np.float32)
                     for col in range(10):
                         tmp[:, col] = indat == col
                     self.targets['train'] = tmp
                 elif 'labels' in repo_file and 't10k' in repo_file:
                     indat = self.read_label_file(
                         repo_file)[0:self.num_test_sample]
-                    tmp = np.zeros((self.num_test_sample, 10))
+                    tmp = np.zeros((self.num_test_sample, 10),
+                                   dtype=np.float32)
                     for col in range(10):
                         tmp[:, col] = indat == col
                     self.targets['test'] = tmp
@@ -146,6 +147,9 @@ class MNIST(Dataset):
                     logger.error('problems loading: %s', name)
             if 'sample_pct' in self.__dict__:
                 self.sample_training_data()
+            if hasattr(self, 'validation_pct'):
+                self.split_set(
+                    self.validation_pct, from_set='train', to_set='validation')
             self.format()
         else:
             raise AttributeError('repo_path not specified in config')

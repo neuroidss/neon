@@ -36,6 +36,13 @@ class CPUTensor(Tensor):
                              types like lists and tuples are also supported.
         dtype (numpy.ndtype, optional): underlying data type of the elements.
                                         If None will use float32.
+        persist_values (bool, optional): If set to True (the default), the
+                                         values assigned to this Tensor will
+                                         persist across multiple begin and end
+                                         calls.  Setting to False may provide a
+                                         performance increase if values do
+                                         not need to be maintained across such
+                                         calls
 
     See also:
         CPU
@@ -49,7 +56,7 @@ class CPUTensor(Tensor):
     _tensor = None
     _min_dims = 2
 
-    def __init__(self, obj, dtype=None):
+    def __init__(self, obj, dtype=None, persist_values=True):
         if dtype is None:
             dtype = 'float32'
         if type(obj) != np.ndarray:
@@ -62,6 +69,7 @@ class CPUTensor(Tensor):
             self._tensor = self._tensor.reshape(self._tensor.shape + (1, ))
         self.shape = self._tensor.shape
         self.dtype = dtype
+        self.persist_values = persist_values
 
     @property
     def raw(self):
@@ -106,6 +114,15 @@ class CPUTensor(Tensor):
         """
         return self._tensor
 
+    def asbuffer(self):
+        """
+        For the CPUTensor, the numpy ndarray itself exposes a buffer interface
+
+        Returns:
+            numpy.ndarray view or copy of the CPUTensor data.
+        """
+        return self._tensor
+
     def __getitem__(self, key):
         """
         Extract a subset view of the items via slice style indexing
@@ -125,6 +142,9 @@ class CPUTensor(Tensor):
         See Also:
             take
         """
+        if isinstance(key, int) and len(self.shape) > 1:
+            # 1D index, ensure we treat as a row vector
+            key = slice(key, key + 1)
         return self.__class__(self._tensor[self._clean(key)],
                               dtype=self._tensor.dtype)
 
@@ -228,7 +248,6 @@ class CPU(Backend):
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
         self.err_init()
-        self.par = None
         self.rng_init()
 
     def default_dtype_if_missing(self, in_dtype):
@@ -236,7 +255,71 @@ class CPU(Backend):
             in_dtype = self.default_dtype
         return in_dtype
 
-    def empty(self, shape, dtype=None):
+    def zeros_like(self, ary, dtype=default_dtype, persist_values=True,
+                   name=None):
+        """
+        Instantiate a new instance of this backend's Tensor class, with the
+        shape taken from ary and populating each element with a value of 0.
+
+        Arguments:
+            ary (tensor object): Tensor to inherit the dimensions of.
+            dtype (data-type, optional): If present, specifies the underlying
+                                         type to employ for each element.
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
+        Returns:
+            Tensor: array object
+
+        Raises:
+            NotImplementedError: Can't be instantiated directly.
+
+        See Also:
+            :py:func:`~neon.backends.backend.Backend.empty`,
+            :py:func:`~neon.backends.backend.Backend.ones`,
+            :py:func:`~neon.backends.backend.Backend.array`
+        """
+        dtype = self.default_dtype_if_missing(dtype)
+        return self.tensor_cls(np.zeros(ary.shape, dtype),
+                               dtype, persist_values)
+
+    def empty_like(self, ary, dtype=default_dtype, persist_values=True,
+                   name=None):
+        """
+        Instantiate a new instance of this backend's Tensor class, with the
+        shape taken from ary.
+
+        Arguments:
+            ary (tensor object): Tensor to inherit the dimensions of.
+            dtype (data-type, optional): If present, specifies the underlying
+                                         type to employ for each element.
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
+        Returns:
+            Tensor: array object
+
+        Raises:
+            NotImplementedError: Can't be instantiated directly.
+
+        See Also:
+            :py:func:`~neon.backends.backend.Backend.empty`,
+            :py:func:`~neon.backends.backend.Backend.ones`,
+            :py:func:`~neon.backends.backend.Backend.array`
+        """
+        dtype = self.default_dtype_if_missing(dtype)
+        return self.tensor_cls(np.empty(ary.shape, dtype),
+                               dtype, persist_values)
+
+    def empty(self, shape, dtype=None, persist_values=True):
         """
         Instantiate a new instance of the CPUTensor class without initializing
         individual element values.
@@ -246,14 +329,21 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             CPUTensor: newly created data structure reference
         """
         dtype = self.default_dtype_if_missing(dtype)
-        return self.tensor_cls(np.empty(shape, dtype), dtype)
+        return self.tensor_cls(np.empty(shape, dtype), dtype, persist_values)
 
-    def array(self, obj, dtype=None):
+    def array(self, obj, dtype=None, persist_values=True):
         """
         Instantiate a new instance of the CPUTensor class setting each element
         value to what is specified in obj.
@@ -266,14 +356,21 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             CPUTensor: newly created data structure reference
         """
         dtype = self.default_dtype_if_missing(dtype)
-        return self.tensor_cls(np.array(obj, dtype), dtype)
+        return self.tensor_cls(np.array(obj, dtype), dtype, persist_values)
 
-    def zeros(self, shape, dtype=None):
+    def zeros(self, shape, dtype=None, persist_values=True):
         """
         Instantiate a new instance of the CPUTensor class setting each element
         value to 0.
@@ -283,14 +380,21 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             CPUTensor: newly created data structure reference
         """
         dtype = self.default_dtype_if_missing(dtype)
-        return self.tensor_cls(np.zeros(shape, dtype), dtype)
+        return self.tensor_cls(np.zeros(shape, dtype), dtype, persist_values)
 
-    def ones(self, shape, dtype=None):
+    def ones(self, shape, dtype=None, persist_values=True):
         """
         Instantiate a new instance of the CPUTensor class setting each element
         value to 1.
@@ -300,12 +404,19 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             CPUTensor: newly created data structure reference
         """
         dtype = self.default_dtype_if_missing(dtype)
-        return self.tensor_cls(np.ones(shape, dtype), dtype)
+        return self.tensor_cls(np.ones(shape, dtype), dtype, persist_values)
 
     def _unwrap(self, obj):
         """
@@ -357,7 +468,8 @@ class CPU(Backend):
             logger.info("Seeding random number generator with: %s", str(seed))
         np.random.seed(seed)
 
-    def uniform(self, low=0.0, high=1.0, size=1, dtype=None):
+    def uniform(self, low=0.0, high=1.0, size=1, dtype=None,
+                persist_values=True):
         """
         Uniform random number sample generation.
 
@@ -371,11 +483,19 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             Tensor: Of specified size filled with these random numbers.
         """
-        return self.tensor_cls(np.random.uniform(low, high, size), dtype)
+        return self.tensor_cls(np.random.uniform(low, high, size), dtype,
+                               persist_values)
 
     def fill_uniform_thresh(self, a, keepthresh=0.5, dtype=None):
         """
@@ -399,7 +519,8 @@ class CPU(Backend):
             np.random.uniform(size=tsr._tensor.shape) < keepthresh,
             dtype=tsr._tensor.dtype)
 
-    def normal(self, loc=0.0, scale=1.0, size=1, dtype=None):
+    def normal(self, loc=0.0, scale=1.0, size=1, dtype=None,
+               persist_values=True):
         """
         Gaussian/Normal random number sample generation
 
@@ -411,11 +532,19 @@ class CPU(Backend):
             dtype (dtype, optional): Element data type.  If not specified we
                                      use default_dtype value ('float32'
                                      unless overridden).
+            persist_values (bool, optional): If set to True (the default), the
+                                             values assigned to this Tensor
+                                             will persist across multiple begin
+                                             and end calls.  Setting to False
+                                             may provide a performance increase
+                                             if values do not need to be
+                                             maintained across such calls
 
         Returns:
             Tensor: Of specified size filled with these random numbers.
         """
-        return self.tensor_cls(np.random.normal(loc, scale, size), dtype)
+        return self.tensor_cls(np.random.normal(loc, scale, size), dtype,
+                               persist_values)
 
     def add(self, left, right, out):
         """
@@ -723,8 +852,7 @@ class CPU(Backend):
         return out
 
     def tanh(self, x, out):
-        np.exp(-2.0 * x._tensor, out=out._tensor)
-        np.divide(1. - out._tensor, 1. + out._tensor, out=out._tensor)
+        np.tanh(x._tensor, out=out._tensor)
         return out
 
     def rectlin(self, x, out):
@@ -981,6 +1109,26 @@ class CPU(Backend):
         """
         self.dot(deltas, inputs.transpose(), out)
 
+    def update_fc_bias(self, err, out):
+        """
+        Compute the updated bias gradient for a fully connected network layer.
+
+        Arguments:
+            out (GPUTensor): Where to store the updated gradient value.
+            err (GPUTensor): backpropagated error
+        """
+        self.sum(err, axes=1, out=out)
+
+    def add_fc_bias(self, inputs, bias):
+        """
+        Add the bias for a fully connected network layer.
+
+        Arguments:
+            inputs (GPUTensor): the input to update.
+            bias (GPUTensor): the amount to increment
+        """
+        self.add(inputs, bias, out=inputs)
+
     def fprop_conv(self, out, inputs, weights, ofmshape, ofmsize, ofmlocs,
                    ifmshape, links, nifm, padding, stride, ngroups, fpropbuf,
                    local=False):
@@ -1112,14 +1260,10 @@ class CPU(Backend):
             # Accumulate the weight updates, going over all
             # corresponding cells in the output feature maps.
             rflinks = links[dst]
-            eslice = deltas.take(ofmlocs[dst], axis=0)
-            if eslice.shape[1] > 1:
-                # vector eslices are treated as column vectors, so are already
-                # in the correct form, otherwise we need to flip.
-                eslice = eslice.transpose()
+            eslice = deltas.take(ofmlocs[dst], axis=0).transpose()
             if local is False:
                 self.dot(inputs.take(rflinks, axis=0), eslice, out=updatebuf)
-                self.add(out, updatebuf, out=out)
+                self.add(out, updatebuf.reshape(out.shape), out=out)
             else:
                 self.dot(inputs.take(rflinks, axis=0), eslice,
                          out=out[(fsize*dst):(fsize*(dst+1))])
@@ -1230,7 +1374,8 @@ class CPU(Backend):
                 # Because we are using advanced indexing into bpropbuf, a
                 # copy is unavoidable, hence the additional temp buffer and
                 # assignment back
-                self.add(bpropbuf[inds, col_inds], rdeltas[dst], bprop_slice)
+                self.add(bpropbuf[inds, col_inds], rdeltas[dst].transpose(),
+                         bprop_slice)
                 bpropbuf[inds, col_inds] = bprop_slice[:]
             elif op == "avg" or op == "mean":
                 self.add(bpropbuf[links[dst]], rdeltas[dst].transpose(),
@@ -1519,6 +1664,17 @@ class CPU(Backend):
                 self.dot(ofmd, ifm, updatebuf)
                 out[ifmind, ofmind] = updatebuf
 
+    def exp_mavg(self, mavg, newval, rho):
+        """
+        Calculate the exponential moving average
+
+        Arguments:
+            mavg:  The running value of the moving average
+            newval:  New sample to be added to the moving average
+            rho:  Interpolation value
+        """
+        mavg._tensor[:] = rho * mavg._tensor + (1.0 - rho) * newval._tensor
+
     def ada_update(self, ps_item, us_item, gs_item, ds_item, ls_item, ss_item,
                    rho, epsilon):
         # Accumulate E[Grad^2]
@@ -1543,6 +1699,30 @@ class CPU(Backend):
 
         # Final update to the params
         self.add(ps_item, ls_item, out=ps_item)
+
+    def rms_update(self, params, updates, run_squares, velocity, scratch_space,
+                   gamma, epsilon, learning_rate, momentum_coef):
+
+        # Update running squares
+        self.multiply(run_squares, gamma, out=run_squares)
+        self.multiply(updates, updates, out=scratch_space)
+        self.multiply(scratch_space, 1.0 - gamma, out=scratch_space)
+        self.add(run_squares, scratch_space, out=run_squares)
+
+        # Now scale the gradient by lr / rms(grad) (with a epsilon term for
+        # stability)
+        self.sqrt(run_squares, out=scratch_space)
+        self.add(scratch_space, epsilon, out=scratch_space)
+        self.divide(learning_rate, scratch_space, out=scratch_space)
+        self.multiply(scratch_space, updates, out=scratch_space)
+
+        # Now update the params
+        if momentum_coef == 0:
+            self.subtract(params, scratch_space, out=params)
+        else:
+            self.multiply(velocity, momentum_coef, out=velocity)
+            self.subtract(velocity, scratch_space, out=velocity)
+            self.add(params, velocity, out=params)
 
     def set_weights(self, dev_weights, host_weights):
         """

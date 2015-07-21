@@ -27,8 +27,10 @@ from neon.optimizers.gradient_descent import (GradientDescent,
                                               GradientDescentMomentum,
     GradientDescentMomentumWeightDecay)  # noqa
 from neon.optimizers.adadelta import AdaDelta
+from neon.optimizers.rmsprop import RMSProp
 from neon.util.compat import range
-from neon.util.param import req_param, opt_param
+from neon.util.param import req_param, opt_param, ensure_dtype
+from neon.util.defaults import default_weight_init, default_lrule_init
 from neon.util.persist import YAMLable
 from neon.transforms.batch_norm import BatchNorm
 from neon.transforms.linear import Linear
@@ -48,7 +50,7 @@ class Layer(YAMLable):
         self.initialized = False
         self.__dict__.update(kwargs)
 
-        req_param(self, ['name'])
+        opt_param(self, ['name'], 'layer')
 
         opt_param(self, ['pre_act_dtype', 'output_dtype', 'deltas_dtype',
                          'weight_dtype', 'updates_dtype'], np.float32)
@@ -56,15 +58,17 @@ class Layer(YAMLable):
         opt_param(self, ['activation'], Linear())
 
         opt_param(self, ['is_local', 'is_data', 'is_cost'], False)
+        opt_param(self, ['is_random'], False)
+
         opt_param(self, ['skip_act', 'has_params'], False)
         opt_param(self, ['prev_names'], [])
 
         opt_param(self, ['backend_type'], 'np.float32')
-        if self.backend_type == 'np.float16':
-            logger.info("Setting layer dtype to float16")
-            for some_type in ['pre_act_dtype', 'output_dtype', 'deltas_dtype',
-                              'weight_dtype', 'updates_dtype']:
-                setattr(self, some_type, np.float16)
+        self.backend_type = ensure_dtype(self.backend_type)  # string to dtype
+        logger.info("Setting layer dtype to" + str(self.backend_type))
+        for some_type in ['pre_act_dtype', 'output_dtype', 'deltas_dtype',
+                          'weight_dtype', 'updates_dtype']:
+            setattr(self, some_type, self.backend_type)
 
     def set_previous_layer(self, pl):
         if pl.is_local:
@@ -112,8 +116,8 @@ class Layer(YAMLable):
         ofmshape = []
         for dim in range(len(self.ifmshape)):
             assert self.ifmshape[dim] >= self.fshape[dim]
-            num = self.ifmshape[dim] - self.fshape[dim] + 1 + 2 * self.pad
-            ofmshape.extend([(num + self.stride - 1) / self.stride])
+            num = self.ifmshape[dim] - self.fshape[dim] + 2 * self.pad
+            ofmshape.extend([num // self.stride + 1])
         self.ofmshape = tuple(ofmshape)
         self.negpad = -self.pad
         self.ifmsize = np.prod(self.ifmshape)
@@ -148,17 +152,29 @@ class Layer(YAMLable):
         return result + ')'
 
     def allocate_output_bufs(self):
-        make_zbuf = self.backend.zeros
+        if self.is_local:
+            make_zbuf = self.backend.allocate_fragment
+        else:
+            make_zbuf = self.backend.empty
+
         opt_param(self, ['out_shape'], (self.nout, self.batch_size))
         opt_param(self, ['delta_shape'], (self.nin, self.batch_size))
 
-        self.output = make_zbuf(self.out_shape, self.output_dtype)
+        self.output = make_zbuf(self.out_shape, dtype=self.output_dtype,
+                                persist_values=True)
 
         self.pre_act = self.activation.pre_act_buffer(self.backend,
                                                       self.output,
                                                       self.pre_act_dtype)
+        if self.backend.is_dist:
+            self.output.ptype = 'fragment' if self.is_local else 'replica'
 
     def set_deltas_buf(self, delta_pool, offset):
+        if self.is_local:
+            make_zbuf = self.backend.allocate_fragment
+        else:
+            make_zbuf = self.backend.empty
+
         self.deltas = None
         if self.prev_layer is None:
             return
@@ -166,10 +182,30 @@ class Layer(YAMLable):
             return
 
         if delta_pool is None:
-            self.deltas = self.backend.zeros(self.delta_shape,
-                                             self.deltas_dtype)
+            # Owned delta bufs are required for parallel mode
+            self.deltas = make_zbuf(self.delta_shape,
+                                    dtype=self.deltas_dtype,
+                                    persist_values=False)
         else:
             self.deltas = delta_pool[offset:(offset + self.delta_shape[0])]
+
+    def get_deltas_buf(self):
+        """
+        This just accesses the deltas for this layer except in the case of
+        a fully connected layer sending deltas back to a local layer in
+        parallel mode.  Then we must transition from replicas to fragments by
+        splitting the inputs across devices
+        """
+        return self.deltas
+
+    def share_acts(self, inputs):
+        """
+        This is a no-op except in the case of a fully connected layer receiving
+        activations from a local or data layer in parallel mode.  Then we must
+        transition from fragments to replicas by sharing the inputs across
+        devices
+        """
+        return inputs
 
     def make_links(self, nifm, ifmsize, ifmshape, ofmshape, fshape, stride):
         # Figure out local connections to the previous layer.
@@ -225,6 +261,9 @@ class Layer(YAMLable):
     def bprop(self, error):
         raise NotImplementedError('This class should not be instantiated.')
 
+    def share_updates(self):
+        pass
+
     def update(self, epoch):
         pass
 
@@ -244,7 +283,7 @@ class CostLayer(Layer):
 
     def initialize(self, kwargs):
         super(CostLayer, self).initialize(kwargs)
-        req_param(self, ['cost', 'ref_layer'])
+        req_param(self, ['cost'])
         opt_param(self, ['ref_label'], 'targets')
         opt_param(self, ['raw_label'], False)
         opt_param(self, ['category_label'], 'l_id')
@@ -275,17 +314,18 @@ class CostLayer(Layer):
         # we just have to scale by mini-batch size
         self.set_reference()
         self.cost.apply_derivative(self.reference)
-        self.backend.divide(self.deltas, self.backend.actual_batch_size,
+        self.backend.divide(self.deltas, self.backend.batch_size,
                             out=self.deltas)
 
     def get_cost(self):
         self.set_reference()
-        scale_cost = (True if self.backend.__module__ == 'neon.backends.gpu'
-                      else False)
+        scale_cost = hasattr(self.backend, 'ng')
         result = self.cost.apply_function(self.reference,
                                           scale_by_batchsize=scale_cost)
         if not scale_cost:  # Check for fp16 backend and use scaling
-            self.backend.divide(result, self.batch_size, result)
+            self.backend.divide(result, self.backend.batch_size, result)
+        if self.backend.is_dist:
+            result.ptype = self.reference.ptype
         return result
 
     def get_reference(self):
@@ -312,6 +352,7 @@ class DataLayer(Layer):
             self.nout = self.nofm * np.prod(self.ofmshape)
         else:
             req_param(self, ['nout'])
+        self.out_shape = (self.nout, self.batch_size)
 
     def init_dataset(self, dataset):
         """
@@ -459,9 +500,12 @@ class WeightLayer(Layer):
 
     def initialize(self, kwargs):
         super(WeightLayer, self).initialize(kwargs)
-        req_param(self, ['weight_init', 'lrule_init', 'nin', 'nout'])
+        req_param(self, ['nin', 'nout'])
+        opt_param(self, ['weight_init'], default_weight_init())
+        opt_param(self, ['lrule_init'], default_lrule_init())
         opt_param(self, ['accumulate'], False)
         opt_param(self, ['batch_norm'], False)
+        opt_param(self, ['mempool'])  # Used for parallel mode
 
         self.weight_init.initialize(self.backend)
         self.params = []
@@ -477,41 +521,59 @@ class WeightLayer(Layer):
         for p in ['weights', 'biases']:
             if hasattr(self, p):
                 p_tensor = getattr(self, p)
-                np_params[p] = np.array(p_tensor.asnumpyarray(),
-                                        dtype=p_tensor.dtype).reshape(
-                                            p_tensor.shape)
+                np_params[p] = p_tensor.asnumpyarray()
 
         if self.batch_norm:
             np_params.update(self.bn.get_params())
 
         np_params.update(self.learning_rule.get_params())
+        if self.bias_rule is not None:
+            np_params.update(self.bias_rule.get_params())
         return np_params
 
     def set_params(self, params_dict):
         for p in ['weights', 'biases']:
             if p in params_dict:
-                getattr(self, p)[:] = params_dict[p]
+                self.backend.set(getattr(self, p), params_dict[p])
 
         if self.batch_norm:
             self.bn.set_params(params_dict)
-
         self.learning_rule.set_params(params_dict)
+        if self.bias_rule is not None:
+            self.bias_rule.set_params(params_dict)
+
+    def make_views(self):
+        pass
 
     def allocate_param_bufs(self):
         if self.params_initialized:
             return
-        make_ebuf = self.backend.empty
+
+        def make_ebuf(shape, dtype, persist_values):
+            b = self.backend.empty(shape, dtype, persist_values)
+            if self.backend.is_dist:
+                b.ptype = 'replica' if self.is_local else 'vfragment'
+            return b
+
+        self.weight_init.is_local = self.is_local
         self.weights = self.weight_init.generate(self.weight_shape,
                                                  self.weight_dtype)
         self.weights.name = self.name  # naming weights for timing diagnostics
-        self.weight_updates = make_ebuf(self.weight_shape, self.updates_dtype)
+        self.weight_updates = make_ebuf(self.weight_shape,
+                                        dtype=self.updates_dtype,
+                                        persist_values=True)
+
+        self.make_views()
 
         self.use_biases = 'bias_init' in self.weight_init.__dict__
         opt_param(self, ['brule_init'], None)
         if self.use_biases is True:
-            self.biases = make_ebuf(self.bias_shape, self.weight_dtype)
+            self.biases = make_ebuf(self.bias_shape, dtype=self.weight_dtype,
+                                    persist_values=False)
             self.biases.fill(self.weight_init.bias_init)
-            self.bias_updates = make_ebuf(self.bias_shape, self.updates_dtype)
+            self.bias_updates = make_ebuf(self.bias_shape,
+                                          dtype=self.updates_dtype,
+                                          persist_values=False)
             self.params.extend([self.weights, self.biases])
             self.updates.extend([self.weight_updates, self.bias_updates])
         else:
@@ -519,21 +581,36 @@ class WeightLayer(Layer):
             self.updates.extend([self.weight_updates])
 
         if self.accumulate:
-            self.utemp = map(lambda x: make_ebuf(x.shape, self.updates_dtype),
-                             self.updates)
+            self.utemp = [make_ebuf(x.shape,
+                                    dtype=self.updates_dtype,
+                                    persist_values=False)
+                          for x in self.updates]
+
         for upm in self.updates:
             upm.fill(0.0)
         self.learning_rule = self.init_learning_rule(self.lrule_init)
         self.bias_rule = None
         if self.brule_init is not None and self.use_biases:
-            self.bias_rule = self.init_learning_rule(self.brule_init)
+            lrn = self.learning_rule.name + 'bias'
+            self.bias_rule = self.init_learning_rule(self.brule_init, name=lrn)
             self.bias_rule.allocate_state([self.updates[-1]])
             self.learning_rule.allocate_state(self.updates[:-1])
         else:
             self.learning_rule.allocate_state(self.updates)
+
+        if self.backend.is_dist:
+            # Create a mempool used for sharing in parallel mode
+            self.make_mempool()
+
         self.params_initialized = True
 
     def update(self, epoch):
+        if self.is_local and self.backend.is_dist:
+            self.backend.redsynchronize()
+            self.backend.synchronize()
+            # for evt, strm in zip(self.update_events, self.backend.strms):
+            #     strm.wait_for_event(evt)
+
         if self.bias_rule is None:
             self.learning_rule.apply_rule(self.params, self.updates, epoch)
         else:
@@ -554,9 +631,12 @@ class WeightLayer(Layer):
         if self.batch_norm and mode is False:
             self.bn.set_inference_mode()
 
-    def init_learning_rule(self, lrule_init):
+    def init_learning_rule(self, lrule_init, name=None):
         dtype = self.weight_dtype  # TODO: Cool to reuse this here?
-        lrname = self.name + '_lr'
+        if name is None:
+            lrname = self.name + '_lr'
+        else:
+            lrname = name
         if lrule_init['type'] == 'gradient_descent':
             lr = GradientDescent(name=lrname,
                                  lr_params=lrule_init['lr_params'])
@@ -573,6 +653,9 @@ class WeightLayer(Layer):
                 param_dtype=dtype, gradient_dtype=dtype)
         elif lrule_init['type'] == 'adadelta':
             lr = AdaDelta(name=lrname, lr_params=lrule_init['lr_params'])
+        elif lrule_init['type'] == 'rmsprop':
+            lr = RMSProp(name=lrname, lr_params=lrule_init['lr_params'],
+                         param_dtype=dtype, gradient_dtype=dtype)
         else:
             raise AttributeError("invalid learning rule params specified")
         lr.initialize(self.backend)

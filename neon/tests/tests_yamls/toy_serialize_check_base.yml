@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 6 of test
-# Train 5 more epochs of MODEL_E5 on cudanet backend
+# Template for the the toy model tests
+# Will use this to to programatically generate other test YAML files
+# 
 
 !obj:experiments.FitPredictErrorExperiment {
 
@@ -69,10 +70,9 @@
   # essentially a multi-layer perceptron with convolutional and pooling layers
   model: !obj:models.MLP {
     backend_type: *bt,
-    num_epochs: 10,
+    num_epochs: 5,
     batch_size: &bs 128,
-    deserialized_path: '~/data/model5.prm',
-    serialized_path: '~/data/model10b.prm',
+    serialized_path: '~/data/model5.prm',
     overwrite_list: ['num_epochs'],
 
     layers: [
@@ -81,7 +81,6 @@
         is_local: True,
         nofm: 3,
         ofmshape: [32, 32],
-#        nout: 784,
       },
       !obj:layers.ConvLayer {
         name: layer1,

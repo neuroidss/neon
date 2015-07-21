@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 1 of test
-# Train model through 5 epochs and generate results (CONTROL1).
-# Serialize MODEL_E5
+# Step 6 of test
+# Train 5 more epochs of MODEL_E5 on cudanet backend
 
 !obj:experiments.FitPredictErrorExperiment {
 
@@ -70,9 +69,10 @@
   # essentially a multi-layer perceptron with convolutional and pooling layers
   model: !obj:models.MLP {
     backend_type: *bt,
-    num_epochs: 5,
+    num_epochs: 10,
     batch_size: &bs 128,
-    serialized_path: '~/data/model5.prm',
+    deserialized_path: '~/data/model5.prm',
+    serialized_path: '~/data/model10b.prm',
     overwrite_list: ['num_epochs'],
 
     layers: [
@@ -81,7 +81,6 @@
         is_local: True,
         nofm: 3,
         ofmshape: [32, 32],
-#        nout: 784,
       },
       !obj:layers.ConvLayer {
         name: layer1,
@@ -125,7 +124,7 @@
       &lastlayer !obj:layers.FCLayer {
         name: output,
         backend_type: *bt,
-        nout: 2, #10,
+        nout: 2,
         activation: !obj:transforms.Logistic {},
         weight_init: *wt_init,
         lrule_init: *ada,

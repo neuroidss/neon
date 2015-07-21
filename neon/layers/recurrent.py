@@ -29,8 +29,8 @@ class RecurrentLayer(WeightLayer):
     def allocate_output_bufs(self):
         make_zbuf = self.backend.zeros
         opt_param(self, ['out_shape'], (self.nout, self.batch_size))
-
-        self.output = make_zbuf(self.out_shape, self.output_dtype)
+        self.output = make_zbuf(self.out_shape, dtype=self.output_dtype,
+                                persist_values=True)
 
         self.pre_act = self.activation.pre_act_buffer(self.backend,
                                                       self.output,
@@ -48,7 +48,9 @@ class RecurrentLayer(WeightLayer):
     def set_deltas_buf(self, delta_pool, offset):
         # create deltas buffer no matter what position relative to the data
         # layer we are. In the RNN even the first layer needs deltas.
-        self.deltas = self.backend.zeros(self.delta_shape, self.deltas_dtype)
+        self.deltas = self.backend.zeros(self.delta_shape,
+                                         dtype=self.deltas_dtype,
+                                         persist_values=False)
 
     def grad_log(self, ng, val):
         logger.info("%s.bprop inc '%s' by %f", self.__class__.__name__, ng,
@@ -95,7 +97,7 @@ class RecurrentCostLayer(CostLayer):
         self.backend.divide(self.deltas, self.batch_size, out=self.deltas)
 
     def set_targets(self):
-        '''for num_grad. normally this is done in bprop'''
+        # used for num_grad. normally this is done inside bprop
         self.targets = getattr(self.ref_layer, self.ref_label)
 
     def get_cost(self):
@@ -123,7 +125,8 @@ class RecurrentOutputLayer(RecurrentLayer):
         make_zbuf = self.backend.zeros
         super(RecurrentOutputLayer, self).allocate_output_bufs()
         # super allocate will set the correct sizes for pre_act, output, berr
-        self.temp_out = make_zbuf(self.weight_shape, self.weight_dtype)
+        self.temp_out = make_zbuf(self.weight_shape, dtype=self.weight_dtype,
+                                  persist_values=False)
 
     def fprop(self, inputs, tau):
         self.backend.fprop_fc(self.pre_act_list[tau], inputs, self.weights)
@@ -139,8 +142,9 @@ class RecurrentOutputLayer(RecurrentLayer):
         self.backend.bprop_fc(self.deltas, self.weights, error)
         self.backend.update_fc(out=self.temp_out, inputs=inputs, deltas=error)
 
-        if numgrad == "output":
-            self.grad_log(numgrad, self.temp_out[12, 56])
+        if numgrad and (numgrad['name'] == "output"):
+            self.grad_log(numgrad['name'], self.temp_out[numgrad['x'],
+                                                         numgrad['v']])
 
         self.backend.add(self.weight_updates, self.temp_out,
                          self.weight_updates)
@@ -168,34 +172,44 @@ class RecurrentHiddenLayer(RecurrentLayer):
         super(RecurrentHiddenLayer, self).allocate_output_bufs()
 
         # these buffers are specific to RHL:
-        # might want self.temp_in=temp_out, to save a buffer.
-        self.temp_in = make_zbuf(self.weight_shape, self.weight_dtype)
-        self.temp_rec = make_zbuf(self.weight_rec_shape)
+        # might want self.Wx_up_part=temp_out, to save a buffer.
+        self.Wx_up_part = make_zbuf(self.weight_shape,
+                                    dtype=self.weight_dtype,
+                                    persist_values=False)
+        self.Wh_up_part = make_zbuf(self.weight_rec_shape,
+                                    dtype=self.weight_dtype,
+                                    persist_values=False)
         # Extra temp buffers z[0]=w*x and z[1]=w*input.
-        self.z = [make_zbuf(self.out_shape) for k in range(2)]
+        self.preact_rec = make_zbuf(self.out_shape,
+                                    dtype=self.weight_dtype,
+                                    persist_values=False)
+        self.preact_in = make_zbuf(self.out_shape,
+                                   dtype=self.weight_dtype,
+                                   persist_values=False)
 
     def allocate_param_bufs(self):
         super(RecurrentHiddenLayer, self).allocate_param_bufs()
-        s_we_ge = self.weight_init_rec.generate  # pep8 forever!
-        self.weights_rec = s_we_ge(self.weight_rec_shape, self.weight_dtype)
-        self.updates_rec = self.backend.empty(self.weight_rec_shape,
-                                              self.updates_dtype)
-
+        weight_gen = self.weight_init_rec.generate
+        self.weights_rec = weight_gen(self.weight_rec_shape, self.weight_dtype)
+        self.Wh_updates = self.backend.zeros(self.weight_rec_shape,
+                                             self.updates_dtype)
         self.params.append(self.weights_rec)
-        self.updates.append(self.updates_rec)
-        # added this loop because rec is an empty buffer that otherwise
-        # does not get initialized and gives nondeterministic behavior.
-        # Why do we use emtpy if all these things need to be zero anyway?
-        for upm in self.updates:
-            upm.fill(0.0)
+        self.updates.append(self.Wh_updates)
+
         # Not ideal, since we just allocated this in the parent function, but
         # we can change the calling order later
         self.learning_rule.allocate_state(self.updates)
 
     def fprop(self, y, c, inputs, tau):
-        self.backend.fprop_fc(self.z[0], y, self.weights_rec)
-        self.backend.fprop_fc(self.z[1], inputs, self.weights)
-        self.backend.add(self.z[0], self.z[1], self.pre_act_list[tau])
+        self.backend.fprop_fc(out=self.preact_rec,
+                              inputs=y,
+                              weights=self.weights_rec)
+        self.backend.fprop_fc(out=self.preact_in,
+                              inputs=inputs,
+                              weights=self.weights)
+        self.backend.add(left=self.preact_rec,
+                         right=self.preact_in,
+                         out=self.pre_act_list[tau])
         self.activation.fprop_func(self.backend,
                                    self.pre_act_list[tau],
                                    self.output_list[tau])
@@ -218,28 +232,28 @@ class RecurrentHiddenLayer(RecurrentLayer):
             self.backend.multiply(error, self.pre_act_list[tau], out=error)
 
         # input weight update (apply curr. delta)
-        self.backend.update_fc(out=self.temp_in,
+        self.backend.update_fc(out=self.Wx_up_part,
                                inputs=inputs,
                                deltas=error)
-        self.backend.add(self.weight_updates, self.temp_in,
+        self.backend.add(self.weight_updates, self.Wx_up_part,
                          self.weight_updates)
 
         if (tau > 0):
             # recurrent weight update (apply prev. delta)
-            self.backend.update_fc(out=self.temp_rec,
+            self.backend.update_fc(out=self.Wh_up_part,
                                    inputs=self.output_list[tau - 1],
                                    deltas=error)
-            self.backend.add(self.updates_rec, self.temp_rec, self.updates_rec)
+            self.backend.add(self.Wh_updates, self.Wh_up_part, self.Wh_updates)
 
-            # **** email urs@nervanasys.com with questions ***
-            # Why only at tau > 0 vs. tau==0? why not weights vs weights_rec
             self.backend.bprop_fc(out=self.deltas,
                                   weights=self.weights_rec,
                                   deltas=error)
-        if numgrad == "input":
-            self.grad_log(numgrad, self.temp_in[12, 110])
-        if numgrad == "rec":
-            self.grad_log(numgrad, self.temp_rec[12, 63])
+        if numgrad and (numgrad['name'] == "input"):
+            self.grad_log(numgrad['name'], self.Wx_up_part[numgrad['x'],
+                          numgrad['y']])
+        if numgrad and (numgrad['name'] == "rec"):
+            self.grad_log(numgrad['name'], self.Wh_up_part[numgrad['x'],
+                          numgrad['z']])
 
 
 class RecurrentLSTMLayer(RecurrentLayer):
@@ -260,7 +274,17 @@ class RecurrentLSTMLayer(RecurrentLayer):
         self.allocate_param_bufs()
 
     def allocate_output_bufs(self):
-        """ all the activations and temp buffers live here """
+        """
+        all the activations, deltas and temp buffers live here::
+
+            activations:       {i,f,o,g}_t
+            preactivations:    net_{i,f,o,g}
+            gate level deltas: self.d_dh1{i,f,o,c}
+            cell level deltas: self.dc_d_dh1{i,f,c}
+            final deltas:      errs{hh, hc, ch, cc}
+            cell state:        c_t, c_phi, c_phip
+
+        """
         super(RecurrentLSTMLayer, self).allocate_output_bufs()
 
         # things that are not initalized by the super class
@@ -270,50 +294,81 @@ class RecurrentLSTMLayer(RecurrentLayer):
         # buffers for gate activation
         for a in ['i', 'f', 'o', 'g']:
             setattr(self, a + '_t',
-                    [be.zeros(net_sze) for k in range(self.unrolls)])
+                    [be.zeros(net_sze, dtype=None, persist_values=False)
+                     for k in range(self.unrolls)])
             setattr(self, 'net_' + a,
-                    [be.zeros(net_sze) for k in range(self.unrolls)])
+                    [be.zeros(net_sze, dtype=None, persist_values=False)
+                     for k in range(self.unrolls)])
 
         # outputs: pre-allocate for d{i,f,o,c}_dh1
-        self.d_dh1 = {gateid: be.zeros(net_sze) for
-                      gateid in ['i', 'f', 'o', 'c']}
-        self.dc_d_dh1 = {gateid: be.zeros(net_sze) for
-                         gateid in ['i', 'f', 'c']}
-        self.errs = {hcval: be.zeros(net_sze) for
-                     hcval in ['hh', 'hc', 'ch', 'cc']}
+        self.d_dh1 = {gateid: be.zeros(net_sze, dtype=None,
+                                       persist_values=False)
+                      for gateid in ['i', 'f', 'o', 'c']}
+        self.dc_d_dh1 = {gateid: be.zeros(net_sze, dtype=None,
+                                          persist_values=False)
+                         for gateid in ['i', 'f', 'c']}
+        self.errs = {hcval: be.zeros(net_sze, dtype=None, persist_values=False)
+                     for hcval in ['hh', 'hc', 'ch', 'cc']}
         self.gatedic = {}
         self.gatedic_u = {}
 
         # buffers for cell and output
-        self.c_t = [be.zeros(net_sze) for k in range(self.unrolls)]
-        self.c_phi = [be.zeros(net_sze) for k in range(self.unrolls)]
-        self.c_phip = [be.zeros(net_sze) for k in range(self.unrolls)]
-        self.output_list = [be.zeros(net_sze) for k in range(self.unrolls)]
+        self.c_t = [be.zeros(net_sze, dtype=None, persist_values=True)
+                    for k in range(self.unrolls)]
+        self.c_phi = [be.zeros(net_sze, dtype=None, persist_values=False)
+                      for k in range(self.unrolls)]
+        self.c_phip = [be.zeros(net_sze, dtype=None, persist_values=False)
+                       for k in range(self.unrolls)]
+        self.output_list = [be.zeros(net_sze, dtype=None, persist_values=True)
+                            for k in range(self.unrolls)]
 
         # pre-allocate preactivation buffers
-        self.temp_x = [be.zeros(net_sze) for k in range(self.unrolls)]
-        self.temp_h = [be.zeros(net_sze) for k in range(self.unrolls)]
+        self.temp_x = [be.zeros(net_sze, dtype=None, persist_values=False)
+                       for k in range(self.unrolls)]
+        self.temp_h = [be.zeros(net_sze, dtype=None, persist_values=False)
+                       for k in range(self.unrolls)]
 
         # pre-allocate derivative buffers
-        self.dh_dwx_buf = be.zeros((self.nout, self.nin))
-        self.dh_dwh_buf = be.zeros((self.nout, self.nout))
+        self.dh_dwx_buf = be.zeros((self.nout, self.nin), dtype=None,
+                                   persist_values=False)
+        self.dh_dwh_buf = be.zeros((self.nout, self.nout), dtype=None,
+                                   persist_values=False)
 
-        self.delta_buf = be.zeros(net_sze)
-        self.bsum_buf = be.zeros((self.nout, 1))
+        self.delta_buf = be.zeros(net_sze, dtype=None, persist_values=False)
+        self.bsum_buf = be.zeros((self.nout, 1), dtype=None,
+                                 persist_values=False)
 
         # This quantity seems to be computed repeatedly
         # error_h * self.o_t[tau] * self.c_phip[tau]
-        self.eh_ot_cphip = be.zeros(net_sze)
+        self.eh_ot_cphip = be.zeros(net_sze, dtype=None, persist_values=False)
 
         # error buffers
-        self.deltas = be.zeros((self.nout, self.batch_size))
-        self.celtas = be.zeros((self.nout, self.batch_size))
+        self.deltas = be.zeros((self.nout, self.batch_size), dtype=None,
+                               persist_values=True)
+        self.celtas = be.zeros((self.nout, self.batch_size), dtype=None,
+                               persist_values=True)
 
         # temp buffer for numerical gradient
         self.temp_t = 0
 
     def allocate_param_bufs(self):
-        """ Weights and updates live here """
+        """
+        params and updates are dictionaries passed to the learning rule.
+        self.params is the collection of 12 tensors::
+
+            W_{i,f,o,c}x
+            W_{i,f,o,c}h
+            b_{i,f,o,c}
+
+        self.updates is a similar collection of 12 tensors::
+
+            W_{i,f,o,c}x_updates
+            W_{i,f,o,c}h_updates
+            b_{i,f,o,c}_updates
+
+        these are further subdivided into per gate dictionaries containing
+        ``gatedic['c'] = [Wcx, Wch, b_c, net_g, g_t]``
+        """
         super(RecurrentLSTMLayer, self).allocate_param_bufs()
 
         be = self.backend
@@ -404,33 +459,53 @@ class RecurrentLSTMLayer(RecurrentLayer):
     def fprop(self, y, cell, inputs, tau):
         """
         Forward pass for the google-style LSTM cell with forget gates, no
-        peepholes.
+        peepholes.  cell (``self.c_t``) and hidden (``self.output_list``)
+        activity variables will be updated as a result.
 
-        Inputs:
+        Arguments:
             y:      input from prev. time step (eg. one batch of (64, 50) size)
-            inputs: input from data (eg. one batch of (128, 50) size)
-            (tau):  unrolling step for BPTT
             cell:   state of memory cell from prev. time step (shape as y)
+            inputs: input from data (eg. one batch of (128, 50) size)
+            tau:    unrolling step for BPTT
 
-        Outputs:
-            self.c_t:         cell activity
-            self.output_list: hidden activity
+        Notes:
+            In math notation, forward pass::
 
-        In math notiation, forward pass:
-            i_t = s(Wix*x + Wih*h +b_i)
-            f_t = s(Wpx*x + Wfh*h +b_f)
-            o_t = s(Wox*x + Woh*h +b_o)
-            g_t = s(Wcx*x + Wch*h +b_c)
-            c_t = f_t .* c_t-1 + i_t .* g_t
-            h_t = o_t .* phi(c_t)
-            ------ output layer -----
-            y_t = s(W_yh * h_t)
-            e_t = xEnt(y, t)
+                i_t = s(Wix*x + Wih*h +b_i)
+                f_t = s(Wpx*x + Wfh*h +b_f)
+                o_t = s(Wox*x + Woh*h +b_o)
+                g_t = s(Wcx*x + Wch*h +b_c)
+                c_t = f_t .* c_t-1 + i_t .* g_t
+                h_t = o_t .* phi(c_t)
+                ------ output layer -----
+                y_t = s(W_yh * h_t)
+                e_t = xEnt(y, t)
 
-        The values are computed and stored for all unrolls so they can be
-        used in bprop. [TODO] check for redundant buffers
-        self.activation is tanh
-        self.gate_activation is logistic
+            The values are computed and stored for all unrolls so they can be
+            used in bprop. [TODO] check for redundant buffers
+            self.activation is tanh
+            self.gate_activation is logistic
+
+            Visualization of the LSTM cell::
+
+                 c(t)   h(t)
+                __|______|___________
+                |  \     x---       |  multiplicative gate: output
+                |   \    |   \      |
+                |    \   O    \     |  nonlinearity
+                |     \ /      \    |
+                |     _+ __     \   |  memory cell
+                |    /     \     \  |
+                |   x       x     \ |  multiplicative gates: forget and input
+                |  / \     / \    | |
+                | |   |   |   |   | |
+                | |   O   O   O   O |  gate nonlinearities
+                |_|___|___|___|___|_|
+                  |   f   g   i   o
+                 c(t-1)    h(t-1)
+
+            this depicts the unrolled LSTM cell where loop connecting the cell
+            to itself via the forget gate
         """
         be = self.backend  # shorthand
 
@@ -462,21 +537,24 @@ class RecurrentLSTMLayer(RecurrentLayer):
         error on the two inputs (4 errors total), and each of the weight
         updates has a contribution from the error to the cell and the hidden.
 
-
-        Inputs:
+        Arguments:
             error_h2: error injected into hidden
             error_c2: error injected directly into cell
 
-        Outputs:
-            error_h1: from h2 and c2: dh2/dh1 + dc2/dh1
-                                      existing  new
-            error_c1: from h2 and c2: dh2/dc1 + dc2/dc1
-                                      new       new
+        Notes:
 
-        [TODO] Two new terms to compute!
+            Outputs::
 
-        Basic derivation
-            In math, backward pass:
+                error_h1: from h2 and c2: dh2/dh1 + dc2/dh1
+                                          existing  new
+                error_c1: from h2 and c2: dh2/dc1 + dc2/dc1
+                                          new       new
+
+            [TODO] Two new terms to compute!
+
+            Basic derivation
+            In math, backward pass::
+
                 de_dJ = d/dJ CE(y,t)
                 dy_dJ = d/dJ sigm(wyh*h)
                 ------ hidden layer -----
@@ -488,9 +566,9 @@ class RecurrentLSTMLayer(RecurrentLayer):
                 do_dJ = d/dJ s(wcx*x+wch*h+b)
                 dg_dJ = d/dJ s(wcx*x+wch*h+b)
 
-        Over multiple time-steps, deltas feeds back in as error.
-        [TODO] Currently using a bunch of if statements to catch propagating
-        into outputs[-1], which should not wrap but be 0.
+            Over multiple time-steps, deltas feeds back in as error.
+            [TODO] Currently using a bunch of if statements to catch
+            propagating into outputs[-1], which should not wrap but be 0.
         """
         be = self.backend
 
@@ -537,8 +615,11 @@ class RecurrentLSTMLayer(RecurrentLayer):
             self.list_product(self.delta_buf, deltargs[ifoc])
             self.cell_bprop(self.delta_buf, cur_input, cur_output, tau,
                             ifoc, self.d_dh1[ifoc])
-            numtemp[ifoc + 'h'][0] = self.dh_dwh_buf[12, 55].asnumpyarray()
-            numtemp[ifoc + 'x'][0] = self.dh_dwx_buf[12, 110].asnumpyarray()
+            if numgrad:
+                tc = self.dh_dwh_buf[numgrad['x'], numgrad['w']].asnumpyarray()
+                numtemp[ifoc + 'h'][0] = tc
+                tc = self.dh_dwx_buf[numgrad['x'], numgrad['y']].asnumpyarray()
+                numtemp[ifoc + 'x'][0] = tc
 
         # e. collect terms
         self.list_sum(self.errs['hh'], self.d_dh1.values())
@@ -560,8 +641,11 @@ class RecurrentLSTMLayer(RecurrentLayer):
             self.list_product(self.delta_buf, deltargs[ifc])
             self.cell_bprop(self.delta_buf, cur_input, cur_output, tau,
                             ifc, self.dc_d_dh1[ifc])
-            numtemp[ifc + 'h'][1] = self.dh_dwh_buf[12, 55].asnumpyarray()
-            numtemp[ifc + 'x'][1] = self.dh_dwx_buf[12, 110].asnumpyarray()
+            if numgrad:
+                tc = self.dh_dwh_buf[numgrad['x'], numgrad['w']].asnumpyarray()
+                numtemp[ifc + 'h'][1] = tc
+                tc = self.dh_dwx_buf[numgrad['x'], numgrad['y']].asnumpyarray()
+                numtemp[ifc + 'x'][1] = tc
 
         # errs['ch'] = sum of dc_d{i,f,g}_dh1 terms
         # errs['hc'] = error_h * self.o_t * self.c_phip * self.f_t @ tau
@@ -573,8 +657,9 @@ class RecurrentLSTMLayer(RecurrentLayer):
         # wrap up:
         be.add(self.errs['hh'], self.errs['ch'], self.deltas)
         be.add(self.errs['cc'], self.errs['hc'], self.celtas)
-        if numgrad is not None and numgrad.startswith("lstm"):
-            ifoc_hx = numgrad[5:7]
+        if numgrad and (numgrad['name'] is not None) \
+                and numgrad['name'].startswith("lstm"):
+            ifoc_hx = numgrad['name'][5:7]
             logger.info("LSTM.bprop: analytic dh_dw%s[%d]= %e + %e = %e",
                         ifoc_hx, tau, numtemp[ifoc_hx][0], numtemp[ifoc_hx][1],
                         numtemp[ifoc_hx][0] + numtemp[ifoc_hx][1])

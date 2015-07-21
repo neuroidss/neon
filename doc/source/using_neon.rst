@@ -54,6 +54,7 @@ Key neon Command-line Arguments
   passed in for ``SEED`` (should be an integer).  This aids in reproducing
   prior results
 
+
 Experiment File Format
 ----------------------
 A `YAML <http://www.yaml.org/>`_ configuration file is used to control the
@@ -69,7 +70,7 @@ process to train and run inference on a toy network:
 Parallelization
 ---------------
 Read through the :doc:`distributed` section to see how to run model training in
-data and model parallel modes using MPI.
+data and model parallel modes using multiple GPU devices.
 
 
 .. _train_models:
@@ -92,6 +93,12 @@ DropOut regularization is supported with the
 :class:`DropOutLayer<neon.layers.dropout.DropOutLayer>` layer type.
 
 
+Saving Models
+-------------
+See :ref:`saving_models` to see how to periodically save model state to disk
+and restore from a given saved snapshot.
+
+
 Generating Predictions
 ----------------------
 With a trained model, we can pass data through it and have it generate
@@ -103,3 +110,20 @@ Reporting Performance
 ---------------------
 See the :doc:`metrics` section to learn how to add one or more performance
 metrics to be computed on one or more dataset partitions.
+
+
+Working Interactively
+---------------------
+If you'd prefer not to utilize the ``neon`` command line executable and YAML
+files to generate experiments, you have the option of writing python code
+directly.
+
+Here's a basic example showing how to train a simple MLP and generate
+predictions:
+
+.. highlight:: python
+
+.. literalinclude:: ../../examples/mlp/mnist-small-noyaml.py
+   :linenos:
+
+An example using an `iPython notebook <https://github.com/NervanaSystems/neon/tree/master/examples/mlp/mnist-notebook.ipynb>` is also provided.

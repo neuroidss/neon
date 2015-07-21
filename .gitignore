@@ -4,8 +4,10 @@ neon.sublime-workspace
 *.pkl
 *.so
 *.swp
+*.prof
 .DS_Store
 .tox
+*.prof
 neon.egg-info
 src
 build
@@ -17,3 +19,5 @@ doc/source/generated
 .pkgs/
 hosts
 neon/hyperopt/expt
+.env
+nosetests.xml

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class UniformRandom(Dataset):
+
     """
     Sets up a synthetic uniformly random dataset.
 
@@ -54,15 +55,19 @@ class UniformRandom(Dataset):
             onehot[:, col] = (labels == col)
         return (data, onehot)
 
-    def load(self):
+    def load(self, backend=None, experiment=None):
         self.inputs['train'], self.targets['train'] = (
             self.load_data((self.ntrain, self.nin)))
         self.inputs['test'], self.targets['test'] = (
             self.load_data((self.ntest, self.nin)))
+        if hasattr(self, 'validation_pct'):
+            self.split_set(
+                self.validation_pct, from_set='train', to_set='validation')
         self.format()
 
 
 class ToyImages(Dataset):
+
     """
     Sets up a synthetic image classification dataset.
 
@@ -72,6 +77,7 @@ class ToyImages(Dataset):
         targets (dict): structure housing the loaded train/test/validation
                         target data
     """
+
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
         self.macro_batched = False
@@ -128,7 +134,7 @@ class ToyImages(Dataset):
             onehot[:, col] = (labels == col)
         return (data, onehot)
 
-    def load(self):
+    def load(self, backend=None, experiment=None):
         ntotal = self.ntrain + self.ntest
         inds = np.arange(ntotal)
         np.random.shuffle(inds)
@@ -137,4 +143,7 @@ class ToyImages(Dataset):
         self.targets['train'] = targets[inds[:self.ntrain]]
         self.inputs['test'] = data[inds[self.ntrain:]]
         self.targets['test'] = targets[inds[self.ntrain:]]
+        if hasattr(self, 'validation_pct'):
+            self.split_set(
+                self.validation_pct, from_set='train', to_set='validation')
         self.format()

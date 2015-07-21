@@ -36,14 +36,8 @@ class LearningRule(object):
 
     def __init__(self, name, lr_params):
         self.name = name
-
         opt_param(self, ['velocity_dtype', 'param_dtype', 'gradient_dtype'],
                   np.float32)
-        opt_param(self, ['backend_type'], 'np.float32')
-        if self.backend_type == 'np.float16':
-            logger.info("Setting learning rule dtypes to float16")
-            for item in ('velocity_dtype', 'param_dtype', 'gradient_dtype'):
-                setattr(self, item, np.float16)
 
     def initialize(self, backend):
         self.backend = backend
@@ -70,15 +64,15 @@ class LearningRule(object):
         for p in self.param_names:
             if hasattr(self, p):
                 p_list = getattr(self, p)
-                np_params[p] = []
+                plr = p + self.name
+                np_params[plr] = []
                 for p_tensor in p_list:
-                    np_params[p].append(np.array(
-                        p_tensor.asnumpyarray(), dtype=p_tensor.dtype).reshape(
-                            p_tensor.shape))
+                    np_params[plr].append(p_tensor.asnumpyarray())
         return np_params
 
     def set_params(self, params_dict):
         for p in self.param_names:
-            if p in params_dict:
-                for i in range(len(params_dict[p])):
-                    getattr(self, p)[i][:] = params_dict[p][i]
+            plr = p + self.name
+            if plr in params_dict:
+                for i in range(len(params_dict[plr])):
+                    self.backend.set(getattr(self, p)[i], params_dict[plr][i])

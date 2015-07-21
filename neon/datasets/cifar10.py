@@ -43,7 +43,7 @@ class CIFAR10(Dataset):
         targets (dict): structure housing the loaded train/test/validation
                         target data
 
-    Kwargs:
+    Keyword Args:
         repo_path (str, optional): where to locally host this dataset on disk
     """
     url = 'http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
@@ -84,7 +84,7 @@ class CIFAR10(Dataset):
             onehot[:, col] = (labels == col)
         return (full_image, onehot)
 
-    def load(self):
+    def load(self, backend=None, experiment=None):
         if self.inputs['train'] is not None:
             return
         if 'repo_path' in self.__dict__:
@@ -123,6 +123,9 @@ class CIFAR10(Dataset):
                                             dtype='float32')
             self.inputs['test'][:] = data
             self.targets['test'][:] = labels
+            if hasattr(self, 'validation_pct'):
+                self.split_set(
+                    self.validation_pct, from_set='train', to_set='validation')
             self.format()
         else:
             raise AttributeError('repo_path not specified in config')

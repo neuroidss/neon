@@ -16,8 +16,8 @@
 Quick start
 ===========
 
-`neon <https://github.com/NervanaSystems/neon>`__ is NErvana's pythON
-based Deep Learning Framework! We have designed it with the following
+`neon <https://github.com/NervanaSystems/neon>`__ is Nervana's Python
+based Deep Learning framework. We have designed it with the following
 functionality in mind:
 
 -  YAML for easy model specification (inspired by
@@ -45,7 +45,7 @@ Features that are unique to neon include:
    deep networks.
 -  4.3s/macrobatch on AlexNet on Titan X (Full run on 1 GPU ~ 45 hrs)
 -  Out of the box `fp16 AlexNet model
-   <https://github.com/NervanaSystems/neon/blob/master/examples/convnet/i1k-alexnet-fp16.yaml>`__ 
+   <https://github.com/NervanaSystems/neon/blob/master/examples/convnet/i1k-alexnet-fp16.yaml>`__
    that has the same accuracy as `fp32
    <https://github.com/NervanaSystems/neon/blob/master/examples/convnet/i1k-alexnet-fp32.yaml>`__
 -  Integration with our fork
@@ -73,11 +73,14 @@ Installation
    dependencies <http://neon.nervanasys.com/docs/latest/installation.html>`__
 -  Cloud-based access (`email us <mailto:demo@nervanasys.com>`__ for an
    account)
+-  `Docker images
+   <http://neon.nervanasys.com/docs/latest/installation.html#docker-images>`__
+   (community provided)
 
 Quick Install
 ~~~~~~~~~~~~~
 
-On a Mac OSX or Linux box enter the following to download and install
+On a Mac OSX or Linux machine, enter the following to download and install
 neon, and use it to train your first multi-layer perceptron or
 convolutional neural networks below.
 
@@ -88,9 +91,10 @@ convolutional neural networks below.
     sudo make install
 
 The above will install neon system-wide.  If you don't have sufficient
-privileges or would prefer an isolated installation, see our `virtualenv
+privileges or would prefer an isolated installation, see either our `virtualenv
 <http://neon.nervanasys.com/docs/latest/installation.html#virtualenv>`__
-based install.
+based install, or take a look at some of the community provided `docker images
+<http://neon.nervanasys.com/docs/latest/installation.html#docker-images>`__.
 
 There are several examples built-in to neon in the ``examples``
 directory for a user to get started. The YAML format is plain-text and
@@ -156,7 +160,7 @@ points are:
 Issues
 ~~~~~~
 
-For any bugs or feature requests please: 
+For any bugs or feature requests please:
 
 #. Search the open and closed `issues list
    <https://github.com/NervanaSystems/neon/issues>`__ to see if we're already

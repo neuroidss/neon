@@ -52,7 +52,7 @@ class Iris(Dataset):
         targets (dict): structure housing the loaded train/test/validation
                         target data
 
-    Kwargs:
+    Keyword Args:
         repo_path (str, optional): where to locally host this dataset on disk
     """
     raw_inputs = numpy.array([[5.1, 3.5, 1.4, 0.2], [4.9, 3, 1.4, 0.2],
@@ -141,7 +141,7 @@ class Iris(Dataset):
         self.macro_batched = False
         self.__dict__.update(kwargs)
 
-    def load(self):
+    def load(self, backend=None, experiment=None):
         if self.inputs['train'] is not None:
             return
         # split the dataset so that for each class we have 30 train, 10
@@ -161,4 +161,7 @@ class Iris(Dataset):
                                     self.raw_onehot_targets[v_idcs, :],
                                     self.raw_onehot_targets[c_idcs, :]))
             self.targets[name] = targets
+        if hasattr(self, 'validation_pct'):
+            self.split_set(
+                self.validation_pct, from_set='train', to_set='validation')
         self.format()

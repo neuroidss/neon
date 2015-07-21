@@ -132,6 +132,12 @@ def obj_multi_constructor(loader, tag_suffix, node):
             parts.insert(0, "neon")
             module = '.'.join(parts[:-1])
             cls = __import__(module)
+            if 'datasets' in parts:
+                # clear any previous datasets loaded with a different backend
+                cls.datasets.dataset.Dataset.inputs = {
+                    'train': None, 'test': None, 'validation': None}
+                cls.datasets.dataset.Dataset.targets = {
+                    'train': None, 'test': None, 'validation': None}
         else:
             raise err
     for comp in parts[1:]:
@@ -174,8 +180,8 @@ def deserialize(load_path, verbose=True):
     See Also:
         serialize
     """
-    if not isinstance(load_path, file):
-        load_path = file(os.path.expandvars(os.path.expanduser(load_path)))
+    if isinstance(load_path, str):
+        load_path = open(os.path.expandvars(os.path.expanduser(load_path)))
     fname = load_path.name
 
     if verbose:
